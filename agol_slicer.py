@@ -1,8 +1,10 @@
 import arcgis
 from arcgis.gis import GIS
 import tkinter as tk
+import xlsxwriter
+from xlsxwriter import Workbook
 
-# get user credentials - Tk
+## get user credentials - Tk
 
 user_input = []
 
@@ -48,66 +50,110 @@ pw = outputs[2]
 gis = GIS(url=url, username=un, password=pw)
 print('Logged in as: {}'.format(gis.properties.user.username))
 
-# gets feature collections and their layers
+# features
 lyrs = {}
 lyr_search = gis.content.search(query="owner: {}".format(un), item_type="Feature *", max_items=1000)
-# print(search_result)
-# print(str(len(search_result)))
 for item in lyr_search:
-    feature_service_id = item.id
-    # print(item.id)  # long id -> '4bf0ef22293b4964bb1e1e4bf261958a'
-    feature_service_name = item.title
-    # print(item.title)  # Feature service name
-    feature_service_url = item.url
-    # item.url  # feature service url 
     layers = item.layers
     for lyr in layers:
-        # print(lyr.properties.name)  # layer name 
-        # lyr.properties.id # layer index 
-        layer_name = lyr.properties.name
-        layer_id = lyr.properties.id
-        lyrs[layer_name] = [layer_id, feature_service_id, feature_service_name, feature_service_url]
+        lyrs[item.url+'/{}'.format(lyr.properties.id)] = [item.id, item.title, lyr.properties.name]
 
-print('LAYERS: ')
-print(lyrs)
-
-# gets WABs and their maps
-apps = {}
-app_search = gis.content.search(query="owner: {}".format(un), item_type = 'Web Mapping Application')
-# print(app_search)
-for item in app_search:
-    app_id = item.id
-    # print(item.id)
-    app_name = item.title
-    # print(item.title)
-    map_in_app_id = item.get_data()['map']['itemId']
-    # print(map_id)
-    apps[app_name] = [app_id, map_in_app_id]
-    # if map_id == map_id_first:
-    #     print('YES!!')
-    # else:
-    #     print('Well shit...')
-
-print('APPS: ')
-print(apps)
-
-# gets web maps and their layers
+# webmaps
 maps = {}
 map_search = gis.content.search(query="owner: {}".format(un), item_type="Web Map", max_items=1000)
-# print(map_search)
 for item in map_search:
-    map_id = item.id
-    # map_id_first = item.id
-    # print(item.id)
-    map_name = item.title
-    # print(item.title)
-    for lyr in item.get_data()['operationalLayers']:
-        print(lyr)
-        # print(lyr['url'])
-        # print(lyr['title'])
-        # print(lyr['itemId'])
-        # maps[item.title] = [str(item.id), lyr['url'], lyr['title'], lyr['itemId']]
+    for item in map_search:
+        opLyrs = item.get_data()['operationalLayers']
+        lyrIDs = [[l['title'], l['url']] for l in opLyrs]
+        maps[item.id] = [item.title, lyrIDs]
 
-print('MAPS: ')
-print(maps)
+# apps
+apps = {}
+app_search = gis.content.search(query="owner: {}".format(un), item_type = 'Web Mapping Application')
+for item in app_search:
+    map_in_app_id = item.get_data()['map']['itemId']
+    apps[item.title] = [item.id, map_in_app_id]
+
+# set up workbook
+workbook = Workbook(r'C:\data\gtg-data\projects\_agol-slicer\ago_slicer_test2.xlsx')
+sheet = workbook.add_worksheet('AGO Content')
+# head_style = workbook.add_format({'bold':True})
+sheet.write('A1','WebApp') #, head_style)
+sheet.write('B1','WebMap') #, head_style)
+sheet.write('C1','Feature Layer') #, head_style)
+sheet.write('D1','Feature Service') #, head_style)
+
+row = 1
+
+# used lists
+used_webmap = []
+used_layers = []
+
+# should catch exceptions for missing keys... this would 
+# identify broken maps/layer connections. 
+# try, except if keyError, means webmap is deleted or
+# feature layer/service is deleted renames/changed index
+# and needs inspection. 
+
+for k, v in apps.items():
+
+    app_name = k
+    app_id = v[0]
+    map_id = v[1]
+
+    map_title = maps[map_id][0]
+    layer_list = maps[map_id][1]
+
+    for i, layers in enumerate(layer_list):
+        layer_name = layers[0]
+        layer_url = layers[1]
+
+        feature_service_name = lyrs[layer_url][1]
+
+        row += 1
+
+        sheet.write('A{}'.format(str(row)), app_name)
+        sheet.write('B{}'.format(str(row)), map_title)
+        sheet.write('C{}'.format(str(row)), layer_name)
+        sheet.write('D{}'.format(str(row)), feature_service_name)
+
+        used_webmap.append(map_id)
+        used_layers.append(layer_url)
+
+unused_webmaps = list(set(maps.keys()) - set(used_webmap))
+
+for wm in unused_webmaps:
+    map_title = maps[wm][0]
+    layer_list = maps[wm][1]
+
+    for i, layers in enumerate(layer_list):
+        layer_name = layers[0]
+        layer_url = layers[1]
+
+        feature_service_name = lyrs[layer_url][1]
+
+        row += 1
+
+        sheet.write('B{}'.format(str(row)), map_title)
+        sheet.write('C{}'.format(str(row)), layer_name)
+        sheet.write('D{}'.format(str(row)), feature_service_name)
+
+        used_layers.append(layer_url)
+
+unused_layers = list(set(lyrs.keys()) - set(used_layers))
+
+for l in unused_layers:
+    feature_name = lyrs[l][2]
+    feature_service_name = lyrs[l][1]
+
+    row += 1
+
+    sheet.write('C{}'.format(str(row)), layer_name)
+    sheet.write('D{}'.format(str(row)), feature_service_name)
+
+
+workbook.close()
+
+print('DONE!')
+
 
