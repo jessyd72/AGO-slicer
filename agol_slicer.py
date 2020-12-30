@@ -1,159 +1,271 @@
 import arcgis
-from arcgis.gis import GIS
+from arcgis.gis import GIS, User
+import json
 import tkinter as tk
 import xlsxwriter
 from xlsxwriter import Workbook
 
-## get user credentials - Tk
+def createWorkbook(output_dir, un):
+    ''' Creates Excel workbook with sheet of 
+    AGOL content for a user. Intended to be used
+    to create a slicer.'''
 
-user_input = []
+    workbook = Workbook(output_dir)
+    sheet = workbook.add_worksheet('AGO Items-{}'.format(un))
+    sheet.write('A1','WebApp')
+    sheet.write('B1','WebMap')
+    sheet.write('C1','Feature Layer')
+    sheet.write('D1','Feature Service')
+    sheet.write('E1', 'Folder')
 
-def getUserInput():
+    return(workbook, sheet)
 
-    global outputs
-    outputs = [item.get() for item in user_input]
+def getUserCreds():
+    '''Gets AGO/Portal creds'''
 
-    root.destroy()
+    def getUserInput():
+        '''Reads inputs from Tk object'''
 
-root = tk.Tk()
-root.title('AGOL Credentials')
-root.geometry('400x300')
+        global outputs
+        outputs = [item.get() for item in user_input]
 
-for x in range(3):
+        root.destroy()
 
-    inputs = tk.Entry(root)
-    inputs.grid(row = x, column=1)
-    if x == 0:
-        inputs.insert(0, 'https://arcgis.com')
-    if x == 2:
-        inputs.config(show='*')
-    user_input.append(inputs)
+    user_input = []
 
-button = tk.Button(root, text='OK', command=getUserInput)
-button.grid(row=3, column=0, pady=20)
+    root = tk.Tk()
+    root.title('AGOL Credentials')
+    root.geometry('400x400')
 
-label_url = tk.Label(root, text='AGOL/Portal URL ')
-label_url.grid(row=0, column=0, pady=20)
-label_un = tk.Label(root, text='Username ')
-label_un.grid(row=1, column=0, pady=20)
-label_pw = tk.Label(root, text='Password ')
-label_pw.grid(row=2, column=0, pady=20)
+    for x in range(4):
 
-root.mainloop()
-print(outputs)
+        inputs = tk.Entry(root)
+        inputs.grid(row = x, column=1)
+        if x == 0:
+            inputs.insert(0, 'https://arcgis.com')
+        if x == 2:
+            inputs.config(show='*')
+            
+        user_input.append(inputs)
 
-url = outputs[0]
-un = outputs[1]
-pw = outputs[2]
+    button = tk.Button(root, text='OK', command=getUserInput)
+    button.grid(row=4, column=0, pady=20)
 
-# access AGOL
-gis = GIS(url=url, username=un, password=pw)
-print('Logged in as: {}'.format(gis.properties.user.username))
+    label_url = tk.Label(root, text='AGOL/Portal URL ')
+    label_url.grid(row=0, column=0, pady=20)
+    label_un = tk.Label(root, text='Username ')
+    label_un.grid(row=1, column=0, pady=20)
+    label_pw = tk.Label(root, text='Password ')
+    label_pw.grid(row=2, column=0, pady=20)
+    label_pw = tk.Label(root, text='Output Excel Workbook ')
+    label_pw.grid(row=3, column=0, pady=20)
 
-# features
-lyrs = {}
-lyr_search = gis.content.search(query="owner: {}".format(un), item_type="Feature *", max_items=1000)
-for item in lyr_search:
-    layers = item.layers
-    for lyr in layers:
-        lyrs[item.url+'/{}'.format(lyr.properties.id)] = [item.id, item.title, lyr.properties.name]
+    root.mainloop()
+    return(outputs)
 
-# webmaps
-maps = {}
-map_search = gis.content.search(query="owner: {}".format(un), item_type="Web Map", max_items=1000)
-for item in map_search:
-    for item in map_search:
-        opLyrs = item.get_data()['operationalLayers']
-        lyrIDs = [[l['title'], l['url']] for l in opLyrs]
-        maps[item.id] = [item.title, lyrIDs]
+def getContent(user):
+    '''Gets all items within a user's
+    AGO. Returns a dictionary of items, 
+    Item ID : [Item Title, Item Type, Folder]'''
 
-# apps
-apps = {}
-app_search = gis.content.search(query="owner: {}".format(un), item_type = 'Web Mapping Application')
-for item in app_search:
-    map_in_app_id = item.get_data()['map']['itemId']
-    apps[item.title] = [item.id, map_in_app_id]
+    all_items = {}
 
-# set up workbook
-workbook = Workbook(r'C:\data\gtg-data\projects\_agol-slicer\ago_slicer_test2.xlsx')
-sheet = workbook.add_worksheet('AGO Content')
-# head_style = workbook.add_format({'bold':True})
-sheet.write('A1','WebApp') #, head_style)
-sheet.write('B1','WebMap') #, head_style)
-sheet.write('C1','Feature Layer') #, head_style)
-sheet.write('D1','Feature Service') #, head_style)
+    # get users items (home)
+    for item in user.items():
+        if item.type != 'Code Attachment':
+            all_items[item.itemid] = [item.title, item.type, 'home', item]
 
-row = 1
+    folders = user.folders
+    for f in folders:
+        f_items = user.items(folder=f['title'])
+        for item in f_items:
+            if item.type != 'Code Attachment':
+                all_items[item.itemid] = [item.title, item.type, f['title'], item]
 
-# used lists
-used_webmap = []
-used_layers = []
+    return(all_items)
 
-# should catch exceptions for missing keys... this would 
-# identify broken maps/layer connections. 
-# try, except if keyError, means webmap is deleted or
-# feature layer/service is deleted renames/changed index
-# and needs inspection. 
+def sortContent(items, content_types):
+    '''Sorts content into respective dictionaries
+    to write to Excel workbook in writeItems function. 
+    Accesses any layers within a feature service.
+    maps, layers, tools, applications, datafiles'''
 
-for k, v in apps.items():
+    lyrs = {}
+    maps = {}
+    apps = {}
+    data = {}
+    tools = {}
 
-    app_name = k
-    app_id = v[0]
-    map_id = v[1]
+    for k, v in items.items():
+        item_id = k
+        item_title = v[0]
+        item_type = v[1]
+        item_loc = v[2]
+        item_obj = v[3]
 
-    map_title = maps[map_id][0]
-    layer_list = maps[map_id][1]
+        item_cat = content_types[item_type]
 
-    for i, layers in enumerate(layer_list):
-        layer_name = layers[0]
-        layer_url = layers[1]
+        if item_cat == 'layers':
+            layers = item_obj.layers
+            for l in layers:
+                service_url = (l.url).replace('ArcGIS', 'arcgis')
+                lyr_name = l.properties.name
+                # feature layer service url = [feature layer name, feature service id, feature service name, folder]
+                lyrs[service_url] = [lyr_name, item_id, item_title, item_loc]
+            if item_type == 'Map Service':
+                lyrs[item_obj.url] = [item_title, item_id, item_title, item_loc]
 
-        feature_service_name = lyrs[layer_url][1]
+        elif item_cat == 'maps':
+            op_lyrs = item_obj.get_data()['operationalLayers']
+            op_lyr_ids = [[l['title'], l['url'].replace('ArcGIS', 'arcgis')] for l in op_lyrs]
+            # web map id = [web map name, [feature layer name, feature layer service url]]
+            maps[item_id] = [item_title, op_lyr_ids, item_loc]
+        
+        elif item_cat == 'applications':
+            # print(item_id)
+            # print(item_title)l
+            # print(item_type)
+            # print(item_loc)
+            map_in_app = ''
+            app_data = item_obj.get_data()
+            if 'map' in app_data.keys():
+                map_in_app = app_data['map']['itemId']
+            elif item_type == 'Dashboard' and 'widgets' in app_data.keys():
+                for d in app_data['widgets']:
+                    if d['type'] == 'mapWidget':
+                        map_in_app = d['itemId']
+                if map_in_app == '':
+                    map_in_app = 'NA'
+            else:
+                map_in_app = 'NA'
+            # application name = [application id, web map id]
+            apps[item_title] = [item_id, map_in_app, item_loc]
+
+        elif item_cat == 'datafiles':
+            data[item_title] = [item_id, item_loc]
+        
+        elif item_cat == 'tools':
+            tools[item_title] = [item_id, item_loc]
+
+        else:
+            continue   
+
+    return(apps, maps, lyrs, data)
+
+def writeItems(workbook, sheet, apps, maps, layers, data):
+    '''dooo itttt
+     feature layer service url = [feature layer name, feature service id, feature service name, folder]
+     web map id = [web map name, [feature layer name, feature layer service url]]
+     application name = [application id, web map id]'''
+
+    used_webmap = []
+    used_layers = []
+    row = 1
+
+    for k, v in apps.items():
+
+        app_name = k
+        map_id = v[1]
+
+        if map_id == 'NA':
+
+            row += 1
+
+            sheet.write('A{}'.format(str(row)), app_name)
+
+        else:
+            map_title = maps[map_id][0]
+            layer_list = maps[map_id][1]
+
+            for lyr in layer_list:
+                layer_name = lyr[0]
+                layer_url = lyr[1]
+
+                feature_service_name = layers[layer_url][2]
+
+                row += 1
+
+                sheet.write('A{}'.format(str(row)), app_name)
+                sheet.write('B{}'.format(str(row)), map_title)
+                sheet.write('C{}'.format(str(row)), layer_name)
+                sheet.write('D{}'.format(str(row)), feature_service_name)
+
+                used_webmap.append(map_id)
+                used_layers.append(layer_url)
+
+    unused_webmaps = list(set(maps.keys()) - set(used_webmap))
+
+    for wm in unused_webmaps:
+
+        map_title = maps[wm][0]
+        layer_list = maps[wm][1]
+
+        for lyr in layer_list:
+            layer_name = lyr[0]
+            layer_url = lyr[1]
+
+            feature_service_name = layers[layer_url][2]
+
+            row += 1
+
+            sheet.write('B{}'.format(str(row)), map_title)
+            sheet.write('C{}'.format(str(row)), layer_name)
+            sheet.write('D{}'.format(str(row)), feature_service_name)
+
+            used_layers.append(layer_url)
+
+    unused_layers = list(set(layers.keys()) - set(used_layers))
+
+    for l in unused_layers:
+        layer_name = layers[l][0]
+        feature_service_name = layers[l][2]
 
         row += 1
 
-        sheet.write('A{}'.format(str(row)), app_name)
-        sheet.write('B{}'.format(str(row)), map_title)
         sheet.write('C{}'.format(str(row)), layer_name)
         sheet.write('D{}'.format(str(row)), feature_service_name)
 
-        used_webmap.append(map_id)
-        used_layers.append(layer_url)
-
-unused_webmaps = list(set(maps.keys()) - set(used_webmap))
-
-for wm in unused_webmaps:
-    map_title = maps[wm][0]
-    layer_list = maps[wm][1]
-
-    for i, layers in enumerate(layer_list):
-        layer_name = layers[0]
-        layer_url = layers[1]
-
-        feature_service_name = lyrs[layer_url][1]
-
-        row += 1
-
-        sheet.write('B{}'.format(str(row)), map_title)
-        sheet.write('C{}'.format(str(row)), layer_name)
-        sheet.write('D{}'.format(str(row)), feature_service_name)
-
-        used_layers.append(layer_url)
-
-unused_layers = list(set(lyrs.keys()) - set(used_layers))
-
-for l in unused_layers:
-    feature_name = lyrs[l][2]
-    feature_service_name = lyrs[l][1]
-
-    row += 1
-
-    sheet.write('C{}'.format(str(row)), layer_name)
-    sheet.write('D{}'.format(str(row)), feature_service_name)
+    workbook.close()
 
 
-workbook.close()
+if __name__ == '__main__':
 
-print('DONE!')
+    try: 
 
+        # AGOL item types
+        print('loading dictionary...')
+        txt = open(r"C:\data\gtg-data\projects\_agol-slicer\AGO_items_by_group.json").read()
+        item_types = json.loads(txt)
+
+        print('getting credentials...')
+        creds = getUserCreds()
+
+        url = creds[0]
+        un = creds[1]
+        pw = creds[2]
+        out_xlsx = creds[3]
+
+        print('accessing AGO...')
+        gis = GIS(url, un, pw)
+        user = User(gis, un)
+        ## future ref- can use gis.users.search() to get list
+        ## of all users in org. Loop all users through the
+        ## getContent funct to get whole org's content. 
+        ## consider new tab/df for each user
+
+        print('getting user''s content...')
+        item_dict = getContent(user)
+        print('organizing content by type...')
+        apps, maps, lyrs, data = sortContent(item_dict, item_types)
+        print('creating XLSX...')
+        wb, sh = createWorkbook(out_xlsx, un)
+        print('writing to XLSX...')
+        writeItems(wb, sh, apps, maps, lyrs, data)
+
+    except KeyError as e:
+        
+        print(e)
+        print(lyrs)
+        print(maps)
+        print(apps)
 
