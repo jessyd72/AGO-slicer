@@ -29,7 +29,7 @@ def getUserCreds():
         gui.destroy()
 
     folderPath = StringVar()
-    a = Label(gui ,text="Enter name")
+    a = Label(gui ,text="Select folder to save Excel file")
     a.grid(row=0,column = 0, pady=20)
     E0 = Entry(gui,textvariable=folderPath)
     E0.grid(row=0,column=1)
